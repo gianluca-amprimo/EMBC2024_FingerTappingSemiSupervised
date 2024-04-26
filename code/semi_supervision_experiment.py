@@ -17,10 +17,7 @@ import plotly
 import wandb
 import random
 from imblearn.metrics import specificity_score
-from pingouin import intraclass_corr
-from krippendorff import alpha
 from tqdm import tqdm
-from pandas import DataFrame
 from lightgbm import LGBMClassifier
 from sklearn.model_selection import StratifiedKFold, GridSearchCV
 from sklearn.metrics import mean_squared_error, mean_absolute_error, cohen_kappa_score, r2_score, \
@@ -111,7 +108,7 @@ def shallowModel(**cfg):
       
     raise ValueError("Unknown model")
 
-def semisupervision_vs_supervision(features, labels, domain_labels, mode, cfg, loso_identity):
+def semisupervision_vs_supervision(features, labels, domain_labels, cfg, loso_identity):
 
     to_select=['wrist_mvmnt_x_median', 'frequency_quartile_range_denoised',
            'frequency_stdev_denoised', 'frequency_lr_fitness_r2_denoised',
@@ -148,7 +145,7 @@ def semisupervision_vs_supervision(features, labels, domain_labels, mode, cfg, l
     all_preds_labelspread=[]
 
 
-    cv=StratifiedKFold(n_splits=abs(cfg['cv']), shuffle=True, random_state=42)
+    cv=StratifiedKFold(n_splits=abs(cfg['cv']), shuffle=True, random_state=cfg['seed'])
 
     i = 0
     if cfg['name']=='baseline':
@@ -175,11 +172,21 @@ def semisupervision_vs_supervision(features, labels, domain_labels, mode, cfg, l
             all_preds_PARKPDMOT.extend(y_pred_PARKPDMOT)
             all_preds.extend(y_pred)
 
-        wandb.init(project="Your project name", config=cfg, name=cfg['name']+"_PARK", group=cfg['group'], reinit=True,
-                   notes="PARK only supervised classifier")
+        wandb.init(project="EMBS2024_Amprimo", config=cfg, name=cfg['name']+"_baseline", group=cfg['group']+"_"+str(cfg['seed']), reinit=True,
+                   notes="Repeated splits")
         print("PARK only:")
         results = metrics(all_preds, all_labels)
         # Compute the confusion matrix
+        wandb.log(results)
+        print(results)
+
+        wandb.init(project="Your project name", config=cfg, name=cfg['name'] + "_PARK+PDMOT", group=cfg['group'],
+                   reinit=True,
+                   notes="PARK and PDMOT supervised classifier")
+        print("PARK and PDMOT only:")
+        results = metrics(all_preds_PARKPDMOT, all_labels)
+        wandb.log(results)
+        print(results)
 
         cm = confusion_matrix(all_labels, all_preds)
 
@@ -193,16 +200,6 @@ def semisupervision_vs_supervision(features, labels, domain_labels, mode, cfg, l
         plt.title('Confusion Matrix')
         plt.show()
 
-        wandb.log(results)
-        print(results)
-
-        wandb.init(project="Your project name", config=cfg, name=cfg['name']+"_PARK_and_PDMOT", group=cfg['group'],
-                   reinit=True,
-                   notes="PARK and PDMOT supervised classifier")
-        print("PARK and PDMOT only:")
-        results = metrics(all_preds_PARKPDMOT, all_labels)
-        wandb.log(results)
-        print(results)
         return
 
 
@@ -224,11 +221,11 @@ def semisupervision_vs_supervision(features, labels, domain_labels, mode, cfg, l
 
         if 'self' in cfg['name']:
              regressor_selftrained = SelfTrainingClassifier(shallowModel(**cfg), threshold=cfg['threshold'], criterion=cfg['method'], k_best=cfg['k_best'],  max_iter=cfg['max_iter'], verbose=True)     
-        
-        if 'aap' in cfg['name']:
+
+        if 'AAP' in cfg['name']:
             feat_train = pd.concat([PARK_data_red, aap_data_PARK])
             label_train = pd.concat([PARK_labels, -aap_labels])
-        elif 'mot' in cfg['name']:
+        elif 'PDMOT' in cfg['name']:
             feat_train = pd.concat([PARK_data_red, PDMOT_data_PARK.iloc[train_index]])
             label_train = pd.concat([PARK_labels, pd.Series(-onp.ones(train_index.shape), index=train_index)])
         else:
@@ -246,11 +243,11 @@ def semisupervision_vs_supervision(features, labels, domain_labels, mode, cfg, l
             y_pred_selftrained = regressor_selftrained.predict(X_test)
             all_preds_selftrained.extend(y_pred_selftrained)
             labels_self= pd.Series(regressor_selftrained.transduction_[regressor_selftrained.labeled_iter_>1], index=label_train.index[regressor_selftrained.labeled_iter_>1])
-            if regressor_selftrained.termiPARKion_condition_=='max_iter':
+            if regressor_selftrained.termination_condition_=='max_iter':
                 reached_max_iter+=1
             data = labels_self[labels_self.index.isin(aap_labels.index)]
         
-        if 'mot' not in cfg['name']:
+        if 'PDMOT' not in cfg['name']:
             plt.figure()
             sns.set_style("whitegrid")
             sns.kdeplot(data=data, label="Label assigned",
@@ -260,7 +257,7 @@ def semisupervision_vs_supervision(features, labels, domain_labels, mode, cfg, l
             wandb.log({"Label assigned to AAP": plt})
             plt.close()
 
-        if 'aap' not in cfg['name']:
+        if 'AAP' not in cfg['name']:
             plt.figure()
             sns.set_style("whitegrid")
             plt.title("Label assigned for PDMOT")
@@ -281,14 +278,14 @@ def semisupervision_vs_supervision(features, labels, domain_labels, mode, cfg, l
         results = metrics(all_preds_selftrained, all_labels)
         cm = confusion_matrix(all_labels, all_preds_selftrained)
         # Plot the confusion matrix
-        plt.figure(figsize=(8, 6))
-        sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", cbar=False,
-                    xticklabels=[0, 1, 2, 3, 4],
-                    yticklabels=[0, 1, 2, 3, 4])
-        plt.xlabel('Predicted UPDRS score')
-        plt.ylabel('Groundtruth scoring')
-        plt.title('Confusion Matrix')
-        plt.show()
+        #plt.figure(figsize=(8, 6))
+        #sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", cbar=False,
+       #             xticklabels=[0, 1, 2, 3, 4],
+       #             yticklabels=[0, 1, 2, 3, 4])
+        #plt.xlabel('Predicted UPDRS score')
+        #plt.ylabel('Groundtruth scoring')
+        #plt.title('Confusion Matrix')
+        #plt.show()
         wandb.log(results)
         print(results)
         return reached_max_iter
@@ -298,112 +295,108 @@ def semisupervision_vs_supervision(features, labels, domain_labels, mode, cfg, l
 def main(cfg):
 
     features, labels, domain_labels, loso_labels = load()
-    ret= semisupervision_vs_supervision(features, labels, domain_labels, cfg['val_mode'], cfg, loso_labels)
+    ret= semisupervision_vs_supervision(features, labels, domain_labels, cfg, loso_labels)
     return ret
 
 
 if __name__ == "__main__":
-
-    param_grid_self = [
-        {'name': "self_training",
-        'group': "semisupervision_cv",
-        'method': 'threshold',
-        'threshold': [0.80, 0.85,  0.90, 0.95, 0.97],
-        'max_iter': [15, 20, 25, 30],
-        'k_best':1,
-        'model': "LGBMClassifier",
-        'random_state': 42,
-        'seed': 42,
-        'learning_rate': 0.013,
-        'n_estimators': 611,
-        'max_depth': 3,
-        'subsample': 0.8
-    },
-        {'name': "self_training",
-        'group': "semisupervision_cv",
-        'method': 'k_best',
-        'threshold': 0.99,
-        'k_best': [10, 50, 100, 150, 200, 300],
-        'max_iter':[30],
-        'model': "LGBMClassifier",
-        'random_state': 42,
-        'seed': 42,
-        'learning_rate': 0.013,
-        'n_estimators': 611,
-        'max_depth': 3,
-        'subsample': 0.8
-    }]
-
-    param_grid_baseline={'name': "baseline",
+    for seed in [42, 452, 35, 101, 20]:
+        param_grid_self = [
+            {'name': "self_training",
             'group': "semisupervision_cv",
-            'method': 'knn',
-            'n_neighbors': range(1, 50, 2),
+            'method': 'threshold',
+            'threshold': [0.80, 0.85,  0.90, 0.95, 0.97],
+            'max_iter': [15, 20, 25, 30],
+            'k_best':1,
             'model': "LGBMClassifier",
-            'val_mode': 'loso',
-            'scaling_method': "StandardScaler",
             'random_state': 42,
-            'seed': 42,
-            'n': 22,
+            'seed': seed,
             'learning_rate': 0.013,
             'n_estimators': 611,
             'max_depth': 3,
-            'subsample': 0.8}
+            'subsample': 0.8
+        },
+            {'name': "self_training",
+            'group': "semisupervision_cv",
+            'method': 'k_best',
+            'threshold': 0.99,
+            'k_best': [10],
+            'max_iter':[30, 40, 50, 70, 80],
+            'model': "LGBMClassifier",
+            'random_state': 42,
+            'seed': seed,
+            'learning_rate': 0.013,
+            'n_estimators': 611,
+            'max_depth': 3,
+            'subsample': 0.8
+        }]
+
+        param_grid_baseline={'name': "baseline",
+                'group': "semisupervision_cv",
+                'method': 'knn',
+                'n_neighbors': range(1, 50, 2),
+                'model': "LGBMClassifier",
+                'val_mode': 'loso',
+                'scaling_method': "StandardScaler",
+                'random_state': 42,
+                'seed': seed,
+                'n': 22,
+                'learning_rate': 0.013,
+                'n_estimators': 611,
+                'max_depth': 3,
+                'subsample': 0.8}
 
 
-    group="semisupervision_cv"
-    for cv in [10, 5, 3, 2, -3, -5]:# 10%, 20%, 30%, 50%, 66,6%, 80%
-        if cv!=5:
+        group="semisupervision_cv"
+        for cv in [10, 5, 3, 2, -3, -5]:# 10%, 20%, 30%, 50%, 66,6%, 80%
             perc= 100/cv if cv>0 else 100-(100/(-cv))
-            for i in range(2):
+            for i in range(1):
                 param_grid_self[i]['group'] = group+f'_{perc:.2f}'
                 param_grid_self[i]['cv'] = cv
-        else:
-            for i in range(2):
-                param_grid_self[i]['cv'] = cv
-        param_grid_baseline['cv']=cv
+            param_grid_baseline['cv']=cv
 
-        # first estimate the baseline of PARK and PARK+PDMOT
-        main(param_grid_baseline)
+            # first estimate the baseline of PARK and PARK+PDMOT
+            main(param_grid_baseline)
 
-        # Loop through each set of parameters for Self-training
-        for type in ['PDMOT+AAP', 'PDMOT', 'AAP']: 
-            for i in range(2):
-                if type == 'aap':
-                    param_grid_self[i]['name'] = param_grid_self[i]['name']+''_AAP'
-                elif type == 'mot':
-                    param_grid_self[i]['name'] = param_grid_self[i]['name'] + '_PDMOT'
-                else:
-                    param_grid_self[i]['name'] = param_grid_self[i]['name'].strip('_AAP').strip('_PDMOT')
+            # Loop through each set of parameters for Self-training
+            for type in ['AAP', 'PDMOT','PDMOT+AAP']:
+                for i in range(1):
+                    if type == 'AAP':
+                        param_grid_self[i]['name'] = param_grid_self[i]['name']+'_AAP'
+                    elif type == 'PDMOT':
+                        param_grid_self[i]['name'] = param_grid_self[i]['name'] + '_PDMOT'
+                    else:
+                        param_grid_self[i]['name'] = param_grid_self[i]['name'].strip('_AAP').strip('_PDMOT')
 
-            for params in param_grid_self:
-                method = params['method']
-                # If the method is 'threshold' or 'k_best', generate configurations accordingly
-                if method == 'threshold':
-                    continue
-                    for thresh in params['threshold']:
-                        params_copy = params.copy()
-                        params_copy['threshold'] = thresh
-                        for maxiter in params['max_iter']:
-                            params_copy_2=params_copy.copy()
-                            params_copy_2['max_iter']=maxiter
-                            params_copy_2['name'] = params_copy['name'] + f'_thresh{thresh}_maxiter{maxiter}'
-                            res=main(params_copy_2)
-                            print(params_copy_2)
-                            if res!=abs(cv): #if all the folds did not reach max_iter, it is pointless to explore bigger max_iter values
-                                break
+                for params in param_grid_self:
+                    method = params['method']
+                    # If the method is 'threshold' or 'k_best', generate configurations accordingly
+                    if method == 'threshold':
+                        continue
+                        for thresh in params['threshold']:
+                            params_copy = params.copy()
+                            params_copy['threshold'] = thresh
+                            for maxiter in params['max_iter']:
+                                params_copy_2=params_copy.copy()
+                                params_copy_2['max_iter']=maxiter
+                                params_copy_2['name'] = params_copy['name'] + f'_thresh{thresh}_maxiter{maxiter}'
+                                res=main(params_copy_2)
+                                print(params_copy_2)
+                                if res!=abs(cv): #if all the folds did not reach max_iter, it is pointless to explore bigger max_iter values
+                                    break
 
-                elif method == 'k_best':
-                    for k_best in params['k_best']:
-                        params_copy = params.copy()
-                        params_copy['k_best'] = k_best
-                        for maxiter in params['max_iter']:
-                            params_copy_2 = params_copy.copy()
-                            params_copy_2['max_iter'] = maxiter
-                            params_copy_2['name'] = params_copy['name'] + f'_kbest{k_best}_maxiter{maxiter}'
-                            res = main(params_copy_2)
-                            print(params_copy_2)
-                            if res != abs(cv):  # if all the folds did not reach max_iter, it is pointless to explore bigger max_iter values
-                                break
+                    elif method == 'k_best':
+                        for k_best in params['k_best']:
+                            params_copy = params.copy()
+                            params_copy['k_best'] = k_best
+                            for maxiter in params['max_iter']:
+                                params_copy_2 = params_copy.copy()
+                                params_copy_2['max_iter'] = maxiter
+                                params_copy_2['name'] = params_copy['name'] + f'_kbest{k_best}_maxiter{maxiter}'
+                                res = main(params_copy_2)
+                                print(params_copy_2)
+                                if res != abs(cv):  # if all the folds did not reach max_iter, it is pointless to explore bigger max_iter values
+                                    break
 
 
 
